@@ -24,6 +24,10 @@
 # %%
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+load_dotenv(REPO_ROOT / ".env")
 
 # Tier detection. Defaults to T4 if env not set.
 COMPUTE_TIER = os.environ.get("COMPUTE_TIER", "T4").upper()
@@ -41,11 +45,10 @@ else:  # BIGGPU
     PER_DEVICE_BATCH = 2
     GRAD_ACCUM = 4
 
-SFT_DATASET = os.environ.get("SFT_DATASET", "5CD-AI/Vietnamese-alpaca-cleaned")
-SFT_SLICE = 1000
+SFT_DATASET = os.environ.get("SFT_DATASET", "5CD-AI/Vietnamese-alpaca-gpt4-gg-translated")
+SFT_SLICE = int(os.environ.get("SFT_SLICE", "1000"))
 NUM_EPOCHS = 1
 
-REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
 ADAPTER_OUT = REPO_ROOT / "adapters" / "sft-mini"
 ADAPTER_OUT.mkdir(parents=True, exist_ok=True)
 
@@ -85,6 +88,17 @@ if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
     print("Set tokenizer.pad_token = eos_token")
 
+# Some quantized Hub checkpoints omit the tokenizer chat template. Qwen 2.5
+# uses ChatML; define the canonical fallback so SFT/NB2/NB4 format identically.
+if tokenizer.chat_template is None:
+    tokenizer.chat_template = (
+        "{% for message in messages %}"
+        "{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}"
+        "{% endfor %}"
+        "{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+    )
+    print("Set Qwen ChatML fallback template")
+
 # %%
 model = FastLanguageModel.get_peft_model(
     model,
@@ -106,7 +120,7 @@ print(f"Trainable params: {sum(p.numel() for p in model.parameters() if p.requir
 # %% [markdown]
 # ## 2. Load + format VN Alpaca slice
 #
-# `5CD-AI/Vietnamese-alpaca-cleaned` is a 50k-row VN Alpaca translation. Lab 21
+# `5CD-AI/Vietnamese-alpaca-gpt4-gg-translated` is a 52k-row VN Alpaca translation. Lab 21
 # uses 1k slice for the demo run; we match that exactly so reward gap is comparable.
 
 # %%
@@ -120,13 +134,20 @@ print(f"\nFirst row:\n{ds[0]}")
 # Alpaca → ChatML format (Qwen2.5's native template)
 def format_alpaca_to_chat(row):
     messages = []
-    if row.get("instruction"):
-        prompt = row["instruction"]
-        if row.get("input"):
-            prompt += "\n\n" + row["input"]
+    # Support the original Alpaca schema and the maintained 5CD Vietnamese
+    # translation, whose columns are suffixed with ``_vi``.
+    instruction = row.get("instruction_vi") or row.get("instruction")
+    user_input = row.get("input_vi") or row.get("input")
+    output = row.get("output_vi") or row.get("output")
+    if instruction:
+        prompt = instruction
+        if user_input:
+            prompt += "\n\n" + user_input
         messages.append({"role": "user", "content": prompt})
-    if row.get("output"):
-        messages.append({"role": "assistant", "content": row["output"]})
+    if output:
+        messages.append({"role": "assistant", "content": output})
+    if not messages:
+        raise ValueError(f"Unsupported SFT row schema; columns: {list(row)}")
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
     return {"text": text}
 

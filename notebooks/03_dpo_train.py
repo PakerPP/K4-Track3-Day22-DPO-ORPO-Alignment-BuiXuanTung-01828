@@ -22,6 +22,10 @@
 # %%
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+load_dotenv(REPO_ROOT / ".env")
 
 COMPUTE_TIER = os.environ.get("COMPUTE_TIER", "T4").upper()
 
@@ -43,7 +47,6 @@ BETA = float(os.environ.get("DPO_BETA", "0.1"))
 LR = float(os.environ.get("DPO_LR", "5e-7"))
 EPOCHS = int(os.environ.get("DPO_EPOCHS", "1"))
 
-REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
 SFT_PATH = REPO_ROOT / "adapters" / "sft-mini"
 DPO_OUT = REPO_ROOT / "adapters" / "dpo"
 PREF_PATH = REPO_ROOT / "data" / "pref" / "train.parquet"
@@ -79,39 +82,35 @@ assert torch.cuda.is_available(), "DPO needs a CUDA GPU. See HARDWARE-GUIDE.md."
 from unsloth import FastLanguageModel
 from peft import PeftModel
 
+# Colab T4 is SM 7.5; recent xFormers wheels may omit its backward kernel.
+# This must be set before model initialization so Unsloth uses its non-xFormers path.
+if COMPUTE_TIER == "T4":
+    FastLanguageModel.disable_xFormers = True
+    print("Disabled xFormers for T4 compatibility")
+
 # Policy — gets new DPO LoRA adapter on top of SFT LoRA
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=BASE_MODEL,
     max_seq_length=MAX_LEN,
     dtype=None,
     load_in_4bit=True,
+    attn_implementation="sdpa",  # T4-safe: avoid unsupported xFormers backward kernels
 )
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
 # Load SFT adapter on top of base
-model = PeftModel.from_pretrained(model, str(SFT_PATH), is_trainable=True)
-print(f"Policy: {model.__class__.__name__} with SFT adapter loaded")
+model = PeftModel.from_pretrained(
+    model, str(SFT_PATH), adapter_name="reference", is_trainable=False
+)
+model.load_adapter(str(SFT_PATH), adapter_name="default", is_trainable=True)
+model.set_adapter("default")
+print("Loaded SFT checkpoint twice: policy=default (trainable), reference=reference (frozen)")
 
 # %%
 # Wrap policy with NEW LoRA adapter for DPO updates (don't merge SFT — keep stacked)
 # Unsloth re-applies LoRA on top of the existing PeftModel.
-model = FastLanguageModel.get_peft_model(
-    model,
-    r=16,
-    lora_alpha=32,
-    lora_dropout=0.0,
-    bias="none",
-    target_modules=[
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
-    ],
-    use_gradient_checkpointing="unsloth",
-    random_state=42,
-    use_rslora=False,
-    loftq_config=None,
-)
-print(f"Trainable params (DPO LoRA): {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+print(f"Trainable params (DPO policy): {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
 # %% [markdown]
 # > **Why no separate `ref_model=` argument?** Modern TRL (≥ 0.12) auto-detects
@@ -143,6 +142,8 @@ dpo_config = DPOConfig(
     fp16=not torch.cuda.is_bf16_supported(),
     seed=42,
     loss_type="sigmoid",         # DPO standard (alternatives: ipo, hinge, kto)
+    model_adapter_name="default",
+    ref_adapter_name="reference",
     report_to="none",
 )
 
@@ -198,6 +199,7 @@ logs = logs[logs["loss"].notna() if "loss" in logs.columns else logs.index].copy
 # TRL DPO logs include rewards/chosen, rewards/rejected, rewards/margins, kl
 chosen_col = "rewards/chosen" if "rewards/chosen" in logs.columns else None
 rejected_col = "rewards/rejected" if "rewards/rejected" in logs.columns else None
+last_chosen = last_rejected = last_gap = None
 
 fig, axes = plt.subplots(1, 2, figsize=(13, 4.2))
 
@@ -238,8 +240,8 @@ plt.show()
 
 # %%
 if chosen_col and rejected_col and len(logs) >= 5:
-    last_chosen = logs[chosen_col].iloc[-5:].mean()
-    last_rejected = logs[rejected_col].iloc[-5:].mean()
+    last_chosen = float(logs[chosen_col].iloc[-5:].mean())
+    last_rejected = float(logs[rejected_col].iloc[-5:].mean())
     last_gap = last_chosen - last_rejected
     first_chosen = logs[chosen_col].iloc[:5].mean()
 
@@ -268,7 +270,7 @@ if chosen_col and rejected_col and len(logs) >= 5:
 # ## 6. Save adapter
 
 # %%
-trainer.model.save_pretrained(str(DPO_OUT))
+trainer.model.save_pretrained(str(DPO_OUT), selected_adapters=["default"])
 tokenizer.save_pretrained(str(DPO_OUT))
 print(f"Saved DPO adapter to {DPO_OUT}")
 
@@ -282,9 +284,10 @@ metrics = {
     "lr": LR,
     "epochs": EPOCHS,
     "final_train_loss": float(train_result.training_loss),
-    "end_chosen_reward": float(last_chosen) if chosen_col else None,
-    "end_rejected_reward": float(last_rejected) if rejected_col else None,
-    "end_reward_gap": float(last_gap) if chosen_col and rejected_col else None,
+    "end_chosen_reward": last_chosen,
+    "end_rejected_reward": last_rejected,
+    "end_reward_gap": last_gap,
+    "adapter_contract": "base + adapters/dpo (DPO adapter initialized from adapters/sft-mini)",
 }
 (DPO_OUT / "dpo_metrics.json").write_text(json.dumps(metrics, indent=2))
 print(f"Wrote metrics to {DPO_OUT / 'dpo_metrics.json'}")

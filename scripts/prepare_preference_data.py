@@ -13,12 +13,14 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 import numpy as np
 from datasets import load_dataset
 from transformers import AutoTokenizer
 
 REPO = Path(__file__).resolve().parent.parent
+load_dotenv(REPO / ".env")
 
 
 def main():

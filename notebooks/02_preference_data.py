@@ -25,15 +25,19 @@
 # %%
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+load_dotenv(REPO_ROOT / ".env")
 
 COMPUTE_TIER = os.environ.get("COMPUTE_TIER", "T4").upper()
 
 if COMPUTE_TIER == "T4":
-    PREF_SLICE = 1000
+    PREF_SLICE = int(os.environ.get("PREF_SLICE", "2000"))
     MAX_LEN = 512
     MAX_PROMPT_LEN = 256
 else:
-    PREF_SLICE = 5000
+    PREF_SLICE = int(os.environ.get("PREF_SLICE", "5000"))
     MAX_LEN = 1024
     MAX_PROMPT_LEN = 512
 
@@ -41,7 +45,6 @@ PREF_DATASET = os.environ.get(
     "PREF_DATASET", "argilla/ultrafeedback-binarized-preferences-cleaned"
 )
 
-REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
 ADAPTER_DIR = REPO_ROOT / "adapters" / "sft-mini"
 PREF_OUT = REPO_ROOT / "data" / "pref"
 PREF_OUT.mkdir(parents=True, exist_ok=True)

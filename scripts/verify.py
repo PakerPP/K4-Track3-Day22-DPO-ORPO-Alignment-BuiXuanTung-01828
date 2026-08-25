@@ -15,6 +15,9 @@ import re
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 TEMPLATE_MARKERS = [
     r"<Họ Tên>",
     r"<A20-K1 / A20-K2",
@@ -78,6 +81,11 @@ def check_dpo_metrics(repo: Path, problems: list[str]) -> bool:
         problems.append(f"CORRUPT  adapters/dpo/dpo_metrics.json — {exc}")
         return False
     gap = m.get("end_reward_gap")
+    if m.get("adapter_contract") is None:
+        print(
+            "WARN     dpo_metrics.json has no adapter_contract metadata. "
+            "This is expected for a completed older notebook; preserve its executed output as evidence."
+        )
     if gap is None:
         problems.append("WARN     adapters/dpo/dpo_metrics.json has no end_reward_gap (TRL log columns missing?)")
         return True
@@ -86,6 +94,25 @@ def check_dpo_metrics(repo: Path, problems: list[str]) -> bool:
             f"WARN     end_reward_gap = {gap:+.3f} (≤ 0). DPO didn't separate chosen from rejected. "
             f"Check NB3 output. (Not a hard fail — explain in REFLECTION § 3 + § 5.)"
         )
+    return True
+
+
+def check_judge_results(path: Path, problems: list[str]) -> bool:
+    if not check_file(path, "judge results (NB4 output)", problems):
+        return False
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        problems.append(f"CORRUPT  judge results JSON — {exc}")
+        return False
+    pending = [r.get("id") for r in rows if r.get("winner") not in {"A", "B", "tie"}
+               or str(r.get("justification", "")).startswith("MANUAL")]
+    if pending:
+        problems.append(
+            f"INCOMPLETE  judge_results.json has unreviewed manual judgments for prompt(s) {pending}. "
+            "Fill the manual rubric or use an API judge, then rerun NB4."
+        )
+        return False
     return True
 
 
@@ -205,8 +232,7 @@ def main() -> int:
     # Eval outputs
     check_file(repo / "data" / "eval" / "side_by_side.jsonl",
                "side-by-side eval (NB4 output)", problems)
-    check_file(repo / "data" / "eval" / "judge_results.json",
-               "judge results (NB4 output)", problems)
+    check_judge_results(repo / "data" / "eval" / "judge_results.json", problems)
 
     # OPTIONAL (bonus) — NB5 GGUF + NB6 benchmark: report, do NOT fail core
     optional = []

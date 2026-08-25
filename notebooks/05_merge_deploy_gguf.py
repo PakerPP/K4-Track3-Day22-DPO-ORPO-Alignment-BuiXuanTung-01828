@@ -25,6 +25,10 @@
 import os
 import json
 from pathlib import Path
+from dotenv import load_dotenv
+
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+load_dotenv(REPO_ROOT / ".env")
 
 COMPUTE_TIER = os.environ.get("COMPUTE_TIER", "T4").upper()
 BASE_MODEL = (
@@ -33,7 +37,6 @@ BASE_MODEL = (
 )
 MAX_LEN = 512 if COMPUTE_TIER == "T4" else 1024
 
-REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
 DPO_PATH = REPO_ROOT / "adapters" / "dpo"
 MERGED_PATH = REPO_ROOT / "adapters" / "merged-fp16"
 GGUF_DIR = REPO_ROOT / "gguf"
@@ -69,9 +72,8 @@ if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
 # Stack SFT-mini → DPO adapters
-SFT_PATH = REPO_ROOT / "adapters" / "sft-mini"
-model = PeftModel.from_pretrained(model, str(SFT_PATH))
-print(f"Loaded SFT-mini adapter from {SFT_PATH}")
+model = PeftModel.from_pretrained(model, str(DPO_PATH))
+print(f"Loaded SFT+DPO adapter from {DPO_PATH}")
 
 # %% [markdown]
 # > **Note:** The DPO adapter trained in NB3 stacks on top of SFT. To get a fully

@@ -21,6 +21,10 @@
 import os
 import json
 from pathlib import Path
+from dotenv import load_dotenv
+
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+load_dotenv(REPO_ROOT / ".env")
 
 COMPUTE_TIER = os.environ.get("COMPUTE_TIER", "T4").upper()
 
@@ -31,7 +35,6 @@ else:
     BASE_MODEL = "unsloth/Qwen2.5-7B-bnb-4bit"
     MAX_LEN = 1024
 
-REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
 SFT_PATH = REPO_ROOT / "adapters" / "sft-mini"
 DPO_PATH = REPO_ROOT / "adapters" / "dpo"
 EVAL_OUT = REPO_ROOT / "data" / "eval"

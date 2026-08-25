@@ -30,6 +30,10 @@ import os
 import json
 import gc
 from pathlib import Path
+from dotenv import load_dotenv
+
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+load_dotenv(REPO_ROOT / ".env")
 
 COMPUTE_TIER = os.environ.get("COMPUTE_TIER", "T4").upper()
 
@@ -46,7 +50,6 @@ else:
     LIMIT_ALPACA = 250
     BATCH_SIZE = 4
 
-REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
 SFT_PATH = REPO_ROOT / "adapters" / "sft-mini"
 DPO_PATH = REPO_ROOT / "adapters" / "dpo"
 EVAL_OUT = REPO_ROOT / "data" / "eval"
@@ -94,7 +97,9 @@ def run_lm_eval(adapter_path, tasks, limit, num_fewshot, label):
 
     out_files = sorted(out_dir.glob("**/results*.json"))
     if not out_files:
-        print("WARN: lm-eval didn't write results JSON. STDOUT tail:")
+        print(f"WARN: lm-eval failed (return code {proc.returncode}); no results JSON. STDERR tail:")
+        print(proc.stderr[-2000:])
+        print("STDOUT tail:")
         print(proc.stdout[-1000:])
         return {"error": "no_results"}
     return json.loads(out_files[-1].read_text())["results"]

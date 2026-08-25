@@ -15,8 +15,10 @@ import argparse
 import json
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 REPO = Path(__file__).resolve().parent.parent
+load_dotenv(REPO / ".env")
 
 
 def main():
@@ -53,20 +55,21 @@ def main():
     from trl import DPOConfig, DPOTrainer
     from unsloth import FastLanguageModel
 
+    if tier == "T4":
+        FastLanguageModel.disable_xFormers = True
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=base_model, max_seq_length=max_len, dtype=None, load_in_4bit=True,
+        attn_implementation="sdpa",
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = PeftModel.from_pretrained(model, args.sft_path, is_trainable=True)
-    model = FastLanguageModel.get_peft_model(
-        model, r=16, lora_alpha=32, lora_dropout=0.0, bias="none",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
-        use_gradient_checkpointing="unsloth",
-        random_state=42, use_rslora=False, loftq_config=None,
+    model = PeftModel.from_pretrained(
+        model, args.sft_path, adapter_name="reference", is_trainable=False
     )
+    model.load_adapter(args.sft_path, adapter_name="default", is_trainable=True)
+    model.set_adapter("default")
 
     config = DPOConfig(
         output_dir=str(output.parent / f"{output.name}-checkpoints"),
@@ -86,6 +89,8 @@ def main():
         fp16=not torch.cuda.is_bf16_supported(),
         seed=42,
         loss_type="sigmoid",
+        model_adapter_name="default",
+        ref_adapter_name="reference",
         report_to="none",
     )
 
@@ -96,7 +101,7 @@ def main():
     )
     train_result = trainer.train()
 
-    trainer.model.save_pretrained(str(output))
+    trainer.model.save_pretrained(str(output), selected_adapters=["default"])
     tokenizer.save_pretrained(str(output))
 
     # Headline metrics
